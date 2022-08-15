@@ -1,193 +1,157 @@
-use std::io;
-use std::collections::HashMap;
+#![feature(const_mut_refs)]
 
-type Stack = Vec<i64>;
-type StkFn = fn(&mut Stack) -> ();
+mod lib;
+use lib::{State, Word};
+
+inventory::collect!(Word);
 
 fn main() {
-    let mut stack = Vec::new();
+    let mut state = State::new(); 
 
-    let mut input = String::new();
-
-    let mut word_map: HashMap<String, StkFn> = HashMap::new();
-
-    let mut is_compiling = false;
-
-    let words: Vec<Word> = vec!(
-        Word {
-            name: String::from("+"),
-            op: add
-        },
-        Word {
-            name: String::from("-"),
-            op: sub
-        },
-        Word {
-            name: String::from("*"),
-            op: mul
-        },
-        Word {
-            name: String::from("/"),
-            op: div
-        },
-        Word {
-            name: String::from("."),
-            op: peek
-        }
-    );
-
-    for word in words {
-        word_map.insert(word.name, word.op);
+    for word in inventory::iter::<Word> {
+        state.put_word(word)
     }
 
     loop {
-        io::stdin().read_line(&mut input).unwrap();
-        // knock newline off end
-        input.truncate(input.len() - 1);
-        input = input.to_ascii_lowercase();
-        let istr = input.as_str();
-        if word_map.contains_key(&input) {
-            word_map.get(istr).unwrap()(&mut stack)
-        } else {
-            match istr {
-                "exit" => break,
-                i => match i.parse::<i64>() {
-                    Ok(n) => {
-                        stack.push(n)
-                    },
-                    Err(_) => println!("Bad integer {}", i),
-                }
-            };
+        let next_word = state.input.get_next_word();
+        if next_word.is_empty() {
+            continue
         }
-        input.clear();
+        match state.get_word(&next_word) {
+            Some(w) => {
+                let word = state.get_word(&next_word).unwrap();
+                word.run(&mut state);
+            },
+            None => {
+                match next_word.as_str() {
+                    "exit" => break,
+                    i => match i.parse::<i64>() {
+                        Ok(n) => {
+                            state.stack.push(n)
+                        },
+                        Err(_) => println!("Bad integer {}", i)
+                    }
+                }
+            }
+        }
     }
 }
 
-struct Word {
-    name: String,
-    op: fn(&mut Stack) -> ()
-}
-
-fn peek(s: &mut Stack) -> () {
-    stack(s, 1, |st| println!("{}", st.last().unwrap()))
-}
-
-fn stack<F>(s: &mut Stack, depth: usize, f: F) -> () where F: Fn(&mut Stack) -> () {
-   if s.len() < depth {
-        println!("Underflow, expected {} items on the stack", depth)
-   } else {
-        f(s);
-   } 
-}
+/* Word Macros */
 
 macro_rules! stack {
     ($func_name:ident, $s:ident, $depth:expr, $fn: block) => {
-       fn $func_name($s: &mut Stack) -> () {
-           if $s.len() < $depth {
+      inventory::submit! {
+        let fname = stringify!($func_name);
+        fn $func_name($s: &mut State) -> () {
+          if $s.stack.len() < $depth {
               println!("Underflow, expected {} items on the stack", $depth)
-           } else {
+          } else {
                $fn
-           }
-       } 
+          }
+        }
+        Word::new_primitive(fname, $func_name)
+      }
     };
 }
 
-macro_rules! stack_unsafe {
-    ($func_name:ident, $s:ident, $depth:expr, $fn: block) => {
-       fn $func_name($s: &mut Stack) -> () {
-           if $s.len() < $depth {
-              println!("Underflow, expected {} items on the stack", $depth)
-           } else {
-               unsafe {
-                   $fn
-               }
-           }
-       } 
+macro_rules! stack_unsafe { ($func_name:ident, $s:ident, $depth:expr, $fn: block) => {
+    inventory::submit! {
+        let fname = stringify!($func_name);
+        fn $func_name($s: &mut State) -> () {
+            if $s.stack.len() < $depth {
+                println!("Underflow, expected {} items on the stack", $depth)
+            } else {
+                unsafe {
+                    $fn
+                }
+            }
+        }
+        Word::new_primitive(fname, $func_name)
+      }
     };
 }
 
-fn binop<F>(s: &mut Stack, f: F) -> () where F: Fn(i64, i64) -> i64 {
-    stack(s, 2, |s| {
-        let arg1 = s.pop().unwrap();
-        let arg2 = s.pop().unwrap();
-        s.push(f(arg1, arg2))
-    })
+macro_rules! binop {
+    ($func_name:ident, $op:tt) => {
+        stack!($func_name, s, 2, {
+            let arg1 = s.pop();
+            let arg2 = s.pop();
+            s.push(arg1 $op arg2)
+        });
+    }
 }
 
-fn binop_bool<F>(s: &mut Stack, f: F) -> () where F: Fn(i64, i64) -> bool {
-    stack(s, 2, |s| {
-        let arg1 = s.pop().unwrap();
-        let arg2 = s.pop().unwrap();
-        s.push(f(arg1, arg2) as i64)
-    })
+macro_rules! binop_bool {
+    ($func_name:ident, $op:tt) => {
+        stack!($func_name, s, 2, {
+            let arg1 = s.pop();
+            let arg2 = s.pop();
+            s.push((arg1 $op arg2) as i64)
+        });
+    }
 }
 
 macro_rules! word_binop_bool {
     ($func_name:ident, $op:tt) => {
-       fn $func_name(s: &mut Stack) -> () {
-           binop_bool(s, |o1, o2| o1 $op o2)
-       } 
+        binop_bool!($func_name, $op);
     };
 }
 
 macro_rules! word_binop {
     ($func_name:ident, $op:tt) => {
-       fn $func_name(s: &mut Stack) -> () {
-           binop(s, |o1, o2| o1 $op o2)
-       } 
+        binop!($func_name, $op);
     };
 }
 
 macro_rules! word_unop_bool {
     ($func_name:ident, $op:expr) => {
-        fn $func_name(s: &mut Stack) -> () {
-            stack(s, 1, |s| {
-                let $func_name = s.pop().unwrap();
-                s.push($op as i64)
-            })
-        }
+        stack!($func_name, s, 1, {
+            let $func_name = s.pop();
+            s.push(($op) as i64)
+        });
     };
 }
 
 macro_rules! word_unop {
     ($func_name:ident, $op:expr) => {
-        fn $func_name(s: &mut Stack) -> () {
-            stack(s, 1, |s| {
-                let $func_name = s.pop().unwrap();
-                s.push($op)
-            })
-        }
+        stack!($func_name, s, 1, {
+            let $func_name = s.pop();
+            s.push($op)
+        });
     };
 }
 
-/*fn drop(s: &mut Stack) -> () {
-    match s.pop() {
-        None => println!("Stack underflow!"),
-        Some(v) => println!("{}, ok", v)
-    }
-}*/
+/* Word defns */
 
-stack!(drop, s, 1, { println!("{}, ok", s.pop().unwrap()) });
+stack!(peek, s, 1, { println!("{}", s.stack.last().unwrap()) });
 
-stack!(dup, s, 1, { s.push(s.last().unwrap().clone()) });
+stack!(pop, s, 1, {
+    let res = s.stack.pop().unwrap();
+    println!("{}", res)
+});
+
+stack!(drop, s, 1, { println!("{}, ok", s.pop()) });
+
+stack!(dup, s, 1, { s.push(s.stack.last().unwrap().clone()) });
 
 stack!(dupnz, s, 1, { 
-    let top = s.last().unwrap().clone();
+    let top = s.stack.last().unwrap().clone();
     if top != 0 { s.push(top) }
 });
 
 stack!(swap, s, 2, { 
-    let top = s.pop().unwrap();
-    let next = s.pop().unwrap();
+    let top = s.pop();
+    let next = s.pop();
     s.push(top);
-    s.push(next);
+    s.push(next)
 });
 
 stack!(swap2, s, 4, { 
-    let one = s.pop().unwrap();
-    let two = s.pop().unwrap();
-    let three = s.pop().unwrap();
-    let four = s.pop().unwrap();
+    let one = s.pop();
+    let two = s.pop();
+    let three = s.pop();
+    let four = s.pop();
     s.push(three);
     s.push(four);
     s.push(one);
@@ -195,68 +159,68 @@ stack!(swap2, s, 4, {
 });
 
 stack!(rot, s, 3, { 
-    let one = s.pop().unwrap();
-    let two = s.pop().unwrap();
-    let three = s.pop().unwrap();
+    let one = s.pop();
+    let two = s.pop();
+    let three = s.pop();
     s.push(two);
     s.push(three);
     s.push(one);
 });
 
 stack!(revrot, s, 3, { 
-    let one = s.pop().unwrap();
-    let two = s.pop().unwrap();
-    let three = s.pop().unwrap();
+    let one = s.pop();
+    let two = s.pop();
+    let three = s.pop();
     s.push(three);
     s.push(one);
     s.push(two);
 });
 
 stack!(over, s, 2, { 
-    let second_last = s[s.len() - 2];
+    let second_last = s.stack[s.stack.len() - 2];
     s.push(second_last);
 });
 
 stack!(dup2, s, 2, { 
-    let one = s.pop().unwrap();
-    let two = s.pop().unwrap();
+    let one = s.pop();
+    let two = s.pop();
     s.push(one);
     s.push(two);
 });
 
 stack!(drop2, s, 2, { 
-    s.pop().unwrap();
-    s.pop().unwrap();
+    s.pop();
+    s.pop();
 });
 
 stack_unsafe!(store, s, 1, { 
-    let ptr = s.pop().unwrap() as *mut i64;
-    *ptr = s.pop().unwrap();
+    let ptr = s.stack.pop().unwrap() as *mut i64;
+    *ptr = s.stack.pop().unwrap();
 });
 
 stack_unsafe!(load, s, 1, { 
-    let ptr = s.pop().unwrap() as *mut i64;
-    s.push(*ptr);
+    let ptr = s.stack.pop().unwrap() as *mut i64;
+    s.stack.push(*ptr);
 });
 
 stack_unsafe!(cstore, s, 1, { 
-    let ptr = s.pop().unwrap() as *mut u8;
-    *ptr = s.pop().unwrap() as u8;
+    let ptr = s.pop() as *mut u8;
+    *ptr = s.pop() as u8;
 });
 
 stack_unsafe!(cload, s, 1, { 
-    let ptr = s.pop().unwrap() as *mut i8;
-    s.push(*ptr as i64);
+    let ptr = s.pop() as *mut i8;
+    s.stack.push(*ptr as i64);
 });
 
 stack_unsafe!(ptrinc, s, 1, { 
-    let ptr = s.pop().unwrap() as *mut i64;
-    *ptr += s.pop().unwrap();
+    let ptr = s.pop() as *mut i64;
+    *ptr += s.pop();
 });
 
 stack_unsafe!(ptrdec, s, 1, { 
-    let ptr = s.pop().unwrap() as *mut i64;
-    *ptr -= s.pop().unwrap();
+    let ptr = s.pop() as *mut i64;
+    *ptr -= s.pop();
 });
 
 word_binop_bool!(equals, ==);
